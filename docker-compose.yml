@@ -30,3 +30,6 @@ services:
 
 volumes:
   app_data:
+networks:
+  jenkins:
+    external: true

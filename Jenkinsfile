@@ -126,11 +126,11 @@ pipeline {
             steps {
                 sh '''
                     echo "Testing application endpoint..."
-                    curl -f http://localhost:3000/health
+curl -f http://jenkins-cicd-app:3000/health
 
-                    echo ""
-                    echo "Testing application API..."
-                    curl -f http://localhost:3000/api/message
+echo ""
+echo "Testing application API..."
+curl -f http://jenkins-cicd-app:3000/api/message
                 '''
             }
         }
