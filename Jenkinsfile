@@ -39,6 +39,12 @@ pipeline {
         }
 
         stage('Build Docker Image') {
+            when {
+                expression {
+                    !params.ROLLBACK_TAG?.trim()
+                }
+            }
+
             steps {
                 script {
                     sh """
@@ -50,20 +56,61 @@ pipeline {
             }
         }
 
+        stage('Verify Rollback Image') {
+            when {
+                expression {
+                    params.ROLLBACK_TAG?.trim()
+                }
+            }
+
+            steps {
+                script {
+                    def rollbackTag = params.ROLLBACK_TAG.trim()
+
+                    sh """
+                        echo "Checking rollback image: ${IMAGE_NAME}:${rollbackTag}"
+
+                        docker image inspect ${IMAGE_NAME}:${rollbackTag} >/dev/null 2>&1
+
+                        if [ \$? -ne 0 ]; then
+                            echo "ERROR: Rollback image ${IMAGE_NAME}:${rollbackTag} does not exist."
+                            exit 1
+                        fi
+
+                        echo "Rollback image exists: ${IMAGE_NAME}:${rollbackTag}"
+                    """
+                }
+            }
+        }
+
         stage('Trivy Security Scan') {
+            when {
+                expression {
+                    !params.ROLLBACK_TAG?.trim()
+                }
+            }
+
             steps {
                 script {
                     sh """
+                        echo "Starting Trivy security scan..."
+
+                        docker volume create trivy-cache >/dev/null 2>&1 || true
+
                         docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v trivy-cache:/root/.cache/trivy \
                         aquasec/trivy:0.74.0 \
                         image \
+                        --timeout 20m \
                         --severity HIGH,CRITICAL \
                         --ignore-unfixed \
                         --exit-code 0 \
                         --format table \
                         ${IMAGE_NAME}:${BUILD_NUMBER} \
                         | tee trivy-report.txt
+
+                        echo "Trivy security scan stage completed."
                     """
                 }
             }
@@ -78,7 +125,9 @@ pipeline {
 
                     sh """
                         cp .env.example .env
+
                         sed -i 's/^APP_VERSION=.*/APP_VERSION=${deployTag}/' .env
+
                         sed -i 's/^APP_PORT=.*/APP_PORT=${APP_PORT}/' .env
 
                         echo "Deploying image: ${IMAGE_NAME}:${deployTag}"
@@ -89,7 +138,9 @@ pipeline {
 
         stage('Deploy with Docker Compose') {
             steps {
-                sh 'docker compose up -d --force-recreate'
+                sh '''
+                    docker compose up -d --force-recreate
+                '''
             }
         }
 
@@ -100,6 +151,7 @@ pipeline {
                         echo "Waiting for application health check..."
 
                         for i in 1 2 3 4 5 6 7 8 9 10; do
+
                             STATUS=$(docker inspect \
                                 --format='{{.State.Health.Status}}' \
                                 jenkins-cicd-app 2>/dev/null || true)
@@ -115,7 +167,9 @@ pipeline {
                         done
 
                         echo "Application failed health check."
+
                         docker compose ps
+
                         exit 1
                     '''
                 }
@@ -125,12 +179,17 @@ pipeline {
         stage('Application Test') {
             steps {
                 sh '''
-                    echo "Testing application endpoint..."
-curl -f http://jenkins-cicd-app:3000/health
+                    echo "Testing application health endpoint..."
 
-echo ""
-echo "Testing application API..."
-curl -f http://jenkins-cicd-app:3000/api/message
+                    curl -f http://jenkins-cicd-app:3000/health
+
+                    echo ""
+
+                    echo "Testing application API..."
+
+                    curl -f http://jenkins-cicd-app:3000/api/message
+
+                    echo ""
                 '''
             }
         }
@@ -138,16 +197,26 @@ curl -f http://jenkins-cicd-app:3000/api/message
         stage('Cleanup') {
             steps {
                 sh '''
-                    echo "Removing unused Docker images..."
-                    docker image prune -f
+                    echo "Removing unused Docker images for this project..."
+
+                    docker image ls "${IMAGE_NAME}" \
+                        --filter "dangling=true" \
+                        --quiet \
+                        | xargs -r docker rmi || true
+
+                    echo "Project-specific Docker image cleanup completed."
                 '''
             }
         }
     }
 
     post {
+
         always {
-            archiveArtifacts artifacts: 'trivy-report.txt', allowEmptyArchive: true
+            archiveArtifacts(
+                artifacts: 'trivy-report.txt',
+                allowEmptyArchive: true
+            )
         }
 
         success {
