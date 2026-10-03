@@ -15,6 +15,9 @@ services:
     volumes:
       - app_data:/app/data
 
+    networks:
+      - jenkins
+
     healthcheck:
       test:
         [
@@ -30,6 +33,7 @@ services:
 
 volumes:
   app_data:
+
 networks:
   jenkins:
     external: true
